@@ -1,60 +1,82 @@
 import pandas as pd
-import numpy as np
+import os
+import re  #<- Biblioteca de Expressões Regulares
+
 
 def processar_dados():
-    print("Iniciando processamento de dados...")
+    print("🔄 Iniciando processamento com REGEX...")
 
-    #Primeiro passo: Carregar o arquivo .csv original
-    nome_arquivo = "GSE113690_Autism_16S_rRNA_OTU_assignment_and_abundance.csv"
+    # Primeiro passo: Carregar o arquivo .csv original
+    nome_arquivo_entrada = 'GSE113690_Autism_16S_rRNA_OTU_assignment_and_abundance.csv'
+    nome_arquivo_saida = 'dados_limpos_microbiota.csv'
 
-    try:
-        df = pd.read_csv(nome_arquivo)
-        print(f"Arquivo {nome_arquivo} carregado com sucesso!")
-    except FileNotFoundError:
-        print(f"Erro. Arquivo {nome_arquivo} não encontrado.")
+    if not os.path.exists(nome_arquivo_entrada):
+        print(f"❌ Erro: '{nome_arquivo_entrada}' não encontrado.")
         return
 
-    #Segundo passo: Separar os metadados da Taxonomia
-    print("Extraindo taxonomia...")
+    #Leitura do arquivo CSV
+    df = pd.read_csv(nome_arquivo_entrada)
+    print(f"📂 Arquivo original lido: {len(df)} linhas.")
 
-    def extrair_taxonomia(tax_str):
-        partes = str(tax_str).split(';')
-        dados = {'Phylum': 'Outros', 'Genus': 'Outros'}
-        for parte in partes:
-            parte = parte.strip()
-            if parte.startswith('p__'):
-                dados['Phylum'] = parte.split('__')[1]
-                #Limpeza extra caso esteja vazio ou "norank"
-                if not dados['Phylum'] or dados['Phylum'] == 'norank':
-                    dados['Phylum'] = 'Não identificado'
-            if parte.startswith('g__'):
-                dados['Genus'] = parte.split('__')[1]
-                if not dados['Genus'] or dados['Genus'] == 'norank':
-                    dados['Genus'] = 'Não identificado'
+    print("🧬 Extraindo taxonomia...")
+
+    #Segundo passo: Separar os metadados da Taxonomia
+    def extrair_taxonomia_regex(tax_str):
+        tax_str = str(tax_str)
+        dados = {'Phylum': 'Não Identificado', 'Genus': 'Não Identificado'}
+
+        #O Regex abaixo procura: "letra p ou g", seguido de "__", seguido de "qualquer coisa que não seja ;"
+        #Isso ignora se tem underline antes (_p__) ou não (p__)
+
+        #Busca FILO (p__)
+        match_phylum = re.search(r'[p]__([^;]+)', tax_str)
+        if match_phylum:
+            valor = match_phylum.group(1).strip()
+            # Limpa se vier escrito 'norank' ou estiver vazio
+            if valor and 'norank' not in valor:
+                dados['Phylum'] = valor
+
+        #Busca GÊNERO (g__)
+        match_genus = re.search(r'[g]__([^;]+)', tax_str)
+        if match_genus:
+            valor = match_genus.group(1).strip()
+            if valor and 'norank' not in valor:
+                dados['Genus'] = valor
+
         return pd.Series(dados)
 
-    df_tax = df['taxonomy'].apply(extrair_taxonomia)
-    df = pd.concat([df, df_tax], axis = 1)
+    #Terceiro passo: Aplicar a função
+    df_tax = df['taxonomy'].apply(extrair_taxonomia_regex)
+    df = pd.concat([df, df_tax], axis=1)
 
-    #Terceiro passo: Transformar de Wide para LONG (Melt)
-    print(f"Reorganizando a tabela (Pivot/Melt)...")
+    #Para teste: Mostra o que ele encontrou na primeira linha
+    exemplo = df['Phylum'].iloc[0]
+    print(f"📝 Teste de Extração (Linha 1): '{exemplo}'")
 
-    colunas_metadados = ['OTU', 'taxonomy', 'Phylum', 'Genus']
-    #Pega todas as colunas que não são metadados (ou seja, amostras A1, A2, B1...)
-    colunas_amostras = [c for c in df.columns if c not in colunas_metadados]
+    #Verifica se o exemplo saiu como "Não identificado" ou "Outros", pois tive problema de extração anteriormente com isso.
+    if exemplo == 'Não Identificado' or exemplo == 'Outros':
+        print("⚠️ ALERTA: A extração falhou! Verifique o formato da coluna taxonomy.")
+    else:
+        print("✅ SUCESSO: Taxonomia extraída corretamente!")
 
-    df_long = df.melt(id_vars = ['Phylum', 'Genus'], value_vars = colunas_amostras, var_name = 'Sample_ID', value_name = 'Abundance')
+    #Melt (Transformação)
+    print("📊 Reorganizando tabela...")
+    cols_meta = ['OTU', 'taxonomy', 'Phylum', 'Genus']
+    cols_amostra = [c for c in df.columns if c not in cols_meta]
 
-    #Quarto passo: Criar a coluna de Grupo
-    #A = TEA (Autismo), B Controle (Neurotípico)
+    df_long = df.melt(id_vars=['Phylum', 'Genus'],
+                      value_vars=cols_amostra,
+                      var_name='Sample_ID',
+                      value_name='Abundance')
+
+    #Classificação dos Grupos
     df_long['Group'] = df_long['Sample_ID'].apply(lambda x: 'TEA' if str(x).startswith('A') else 'Controle')
 
-    #Quinto e último passo: Realizar a limpeza final. Remover amostras com abundância 0 para deixar o arquivo mais leve e rápido
+    #Remove zeros e salva
     df_final = df_long[df_long['Abundance'] > 0]
+    df_final.to_csv(nome_arquivo_saida, index=False)
+    print(f"💾 Arquivo salvo: {nome_arquivo_saida}")
 
-    print(f"Salvando arquivo final com {len(df_final)} linhas...")
-    df_final.to_csv('dados_limpos_microbiota.csv', index = False)
-    print(f"Sucesso!!! Arquivo 'dados_limpos_microbiota.csv' criado!")
 
 if __name__ == '__main__':
     processar_dados()
